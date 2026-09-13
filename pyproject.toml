@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "g9s"
+version = "0.1.0"
+description = "k9s-inspired TUI for managing GKE kubeconfig files"
+requires-python = ">=3.11"
+dependencies = [
+    "textual>=0.47.0",
+]
+
+[project.scripts]
+g9s = "g9s.__main__:main"
+
+[project.urls]
+Repository = "https://github.com/TakealotGroup/g9s"
+
+[tool.hatch.build.targets.wheel]
+packages = ["g9s"]
