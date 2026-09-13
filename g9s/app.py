@@ -1565,7 +1565,7 @@ class G9S(App):
 
         lines = [
             f"[#f5a623]Organization:[/]  [bold white]{self._organization}[/]",
-            f"[#f5a623]User        :[/]  [bold white]{self._account}[/]",
+            f"[#f5a623]Google User :[/]  [bold white]{self._account}[/]",
             f"[#f5a623]Selected    :[/]  [bold white]{len(self._selected)} cluster(s)[/]",
             f"[#f5a623]Project     :[/]  [bold white]{current_project}[/]",
             f"[#f5a623]Workspace   :[/]  [bold white]{self._workspace}[/]",

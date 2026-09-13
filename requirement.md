@@ -1,156 +1,176 @@
-# g9s — Requirements
+# G9s — Requirements
 
-A k9s-styled terminal UI for browsing GCP resources and merging GKE cluster
+A K9s-styled terminal UI for browsing GCP resources and managing GKE cluster
 credentials into a single local kubeconfig. Built with Python + [Textual](https://textual.textualize.io/).
+
+---
 
 ## 1. Purpose
 
 Let a user interactively:
 
-1. Browse the GCP projects they're authorized against.
-2. Drill into a project and browse its resources (GKE clusters, Compute
-   instances, Cloud SQL instances, Storage buckets).
-3. Pick one or more GKE clusters — across any number of projects — and merge
-   their credentials into a single `~/.kube/config`, so every selected
-   cluster is available on the system `kubectl` PATH.
+1. Start from an existing `~/.kube/config` (or a user-specified workspace folder) and see which clusters are already configured.
+2. Browse GCP projects and drill into their resources (GKE clusters, Compute instances, Cloud SQL instances, Storage buckets).
+3. Pick additional GKE clusters — across any number of projects — and merge all selected credentials into a single `~/.kube/config`, so every selected cluster is available on the system `kubectl` PATH.
+4. Manage context names (rename contexts before generation) and remove clusters from the configured list.
 
-All GCP-facing operations are **read-only** (`list`/`describe`/`get-credentials`).
-The only writes are local: temp credential files and `~/.kube/config` itself
-(backed up first).
+All GCP-facing operations are **read-only** (`list`/`describe`/`get-credentials`). The only writes are local: temp credential files, `~/.kube/config` itself (backed up first to `~/.kube/config.bak`), and in-place context renames inside temp files.
 
-## 2. Distribution
+---
 
-- Installable Python package (not a single script), built with **uv** +
-  hatchling — `uv sync`, `uv run g9s`, `uv tool install .`, `uv build`.
-- `pyproject.toml` defines a console-script entry point: `g9s = "g9s.__main__:main"`.
-- Project name / package / CLI command / app class are all **`g9s`** (renamed
-  from an earlier "k9m" working name — the app is explicitly modeled on k9s,
-  hence the name).
+## 2. Startup flow
 
-## 3. Navigation model
+On launch, G9s runs through a fixed sequence:
 
-A k9s-style drill-down stack, not a single flat table:
+1. **Auth check** — runs `gcloud auth list` in the background. If no active account is found, a modal offers to run `gcloud auth login` (browser-based) or quit.
+2. **Workspace selection** — prompts for the kubeconfig workspace directory (default `~/.kube`). The user can change the path, confirm, or quit.
+3. **Kubeconfig scan** — the existing `config` file in the workspace is read. `context.cluster` is inspected for every context entry (not just the context name) so renamed GKE contexts are correctly resolved to their underlying project/location/cluster.
+4. **Home screen**:
+   - If the kubeconfig has GKE contexts: land on the **Configured Clusters** screen with all found clusters pre-selected.
+   - If not: show a modal explaining no config was found, with options to proceed to Projects or quit.
+
+---
+
+## 3. Distribution
+
+- Installable Python package, built with **uv** + hatchling.
+- Entry point: `g9s = "g9s.__main__:main"` — run with `uv run g9s` or `g9s` after install.
+- Requires Python ≥ 3.11, `textual ≥ 0.47.0`.
+- Prerequisites on PATH: `gcloud` (Google Cloud SDK) and `kubectl`.
+
+---
+
+## 4. Configured Clusters screen (`:configured`)
+
+The home screen when an existing kubeconfig is found. Reachable anytime via `:configured`, `:config`, or `:home`.
+
+- Shows every context from the existing kubeconfig with columns: `CONTEXT`, `CLUSTER`, `PROJECT`, `LOCATION`.
+  - **CONTEXT** — the context name as stored in the kubeconfig (may be a custom/renamed name).
+  - **CLUSTER** — the short GKE cluster resource name, resolved from `context.cluster` in the kubeconfig, not from the context name. This correctly handles contexts that have been renamed from their default `gke_{project}_{location}_{cluster}` form.
+  - **PROJECT** / **LOCATION** — also resolved from `context.cluster`.
+- All contexts are pre-selected (`✓`) on load.
+- Additionally-selected clusters (added via Projects drill-down) appear here too so the full set is always visible in one place.
+- **`enter`** on a row opens a **Rename Context** modal — the user can edit the context name that will be written to the merged kubeconfig. The field defaults to the original context name (or `gke_{project}_{location}_{cluster}` if no name is available).
+- **`d`** removes a cluster from this screen: it is deselected and removed from the kubeconfig context list so it won't be included in the next generation.
+- **`space` / `a` / `A`** toggle individual / all / none of the visible rows.
+
+---
+
+## 5. Navigation model
+
+A K9s-style lazy drill-down stack. Each screen makes exactly one `gcloud` call, fired only on first load. Popping back with `<esc>` reuses cached rows.
 
 ```
-Projects  →  Resource Kinds (per project)  →  Resource List (per kind)  →  Detail
+Configured Clusters (home)
+      │
+      ├── esc → stays at home
+      │
+Projects  →  Resource Kinds  →  Resource List  →  Detail (JSON)
 ```
 
-- **Projects** — `gcloud projects list` (no filter; every lifecycle state is
-  returned, not just `ACTIVE`).
-- **Resource Kinds** — a static, no-gcloud-call menu of resource categories
-  available for the selected project. Currently: GKE Clusters, Compute
-  Instances, Cloud SQL Instances, Storage Buckets. Adding a new kind is a
-  registry entry (`g9s/resources.py`), not a new screen.
-- **Resource List** — one `list` call for the chosen kind/project
-  (`gcloud container clusters list`, `gcloud compute instances list`,
-  `gcloud sql instances list`, `gcloud storage buckets list`).
-- **Detail** — one `describe` call for the selected row, rendered as
-  formatted JSON.
+- **Projects** — `gcloud projects list` (all lifecycle states). Has a **STATUS** column (`ACTIVE` / `DELETE_REQUESTED` / `DELETE_IN_PROGRESS`, colour-coded).
+- **Resource Kinds** — static menu per project: GKE Clusters, Compute Instances, Cloud SQL Instances, Storage Buckets. No gcloud call.
+- **Resource List** — one `list` call per kind/project. All columns are sortable (click header; click again to reverse). Numeric columns sort numerically.
+- **Detail** — one `describe` call, rendered as formatted JSON.
 
-Rules:
+Adding a new browsable resource kind requires only a registry entry in `g9s/resources.py` — no new screen class.
 
-- Exactly **one gcloud call per screen**, fired only the first time that
-  screen is pushed.
-- Popping back (`<esc>`) to an already-visited screen reuses its cached rows
-  — it does **not** re-fetch.
-- Organizations/Folders are explicitly **out of scope for now** — the stack
-  starts at Projects. (`gcloud resource-manager folders list` has no
-  parent-less "list everything" form anyway, so Folders can only ever be
-  reached by drilling into a specific Org later, if that's added.)
+---
 
-## 4. GKE cluster selection & kubeconfig generation
+## 6. GKE cluster selection & kubeconfig generation
 
-- Only the **GKE Clusters** resource kind is selectable (checkbox column).
-- Selections are held at the app level (not per-screen), so picking clusters
-  in one project, navigating elsewhere, and picking more clusters in a
-  different project all accumulate into one set.
-- `<g>` opens a modal that, for each selected cluster: runs
-  `gcloud container clusters get-credentials` into a temp file, then merges
-  everything with `kubectl config view --merge --flatten` into
-  `~/.kube/config` (existing file backed up to `~/.kube/config.bak` first).
+- Only **GKE Clusters** resource kind is selectable.
+- Selections accumulate at the app level across all screens and projects.
+- **`<g>`** opens the Generate modal which, for each selected cluster:
+  1. Runs `gcloud container clusters get-credentials` into a temp file.
+  2. If the user gave the cluster a custom context name, runs `kubectl config rename-context OLD NEW` on the temp file.
+  3. Merges all temp files with `kubectl config view --merge --flatten` into `{workspace}/config`.
+- Every gcloud/kubectl command is visible in the Command Log panel (`<l>`).
 
-## 5. Filtering & sorting
+---
 
-- `/` opens a live filter bar on the current list screen — substring match
-  (case-insensitive) across every rendered column. `<enter>` keeps the filter
-  applied and closes the bar; `<esc>` clears the filter and closes the bar.
-  Works on every list screen (Projects, Resource Kinds, any Resource List),
-  not just GKE Clusters.
-- `<a>` / `<A>` (select all / deselect all) act on the currently *visible*
-  (filtered) rows only.
-- Clicking any column header sorts the table by that column (click again to
-  reverse). Numeric-looking columns (e.g. node count) sort numerically, not
-  lexically.
-- The Projects screen has a **STATUS** column showing `lifecycleState`
-  (`ACTIVE` / `DELETE_REQUESTED` / `DELETE_IN_PROGRESS`, colour-coded).
+## 7. Filtering
 
-## 6. Command bar
+- **`/`** opens a live filter bar (K9s-style, with a fixed `/ ` prefix that cannot be deleted) — substring match across every rendered column, case-insensitive.
+- `<enter>` keeps the filter and closes the bar; `<esc>` clears the filter and closes the bar.
+- Works on every list screen including Projects, Configured Clusters, and all Resource Lists.
+- `<a>` / `<A>` (select all / deselect all) act on the currently *visible* (filtered) rows only.
+- The breadcrumb shows `[visible/total]` and the active filter text while a filter is applied.
 
-A trimmed-down k9s-style `:` command bar (not a full clone — no fuzzy
-suggestions/history):
+---
 
-- `:projects` (or `:proj`) — reset the stack back to the Projects root.
-- `:gke`, `:compute`, `:sql`, `:storage` (plus aliases like `:clusters`,
-  `:vm`, `:cloudsql`, `:bucket`) — jump straight to that resource kind's list
-  for whichever project is currently in context, skipping the Resource Kinds
-  menu.
+## 8. Command bar
 
-## 7. Layout — k9s visual style
+A K9s-style `:` command bar (fixed `> ` prefix that cannot be deleted):
 
-No sidebar. Header is a three-column row:
+| Command | Action |
+|---|---|
+| `:configured`, `:config`, `:home` | Jump to Configured Clusters screen |
+| `:projects`, `:proj` | Jump to Projects screen |
+| `:gke`, `:clusters`, `:cluster` | Jump to GKE Clusters list for current project |
+| `:compute`, `:instances`, `:vm`, `:vms` | Jump to Compute Instances list |
+| `:sql`, `:cloudsql` | Jump to Cloud SQL Instances list |
+| `:storage`, `:bucket`, `:buckets`, `:gcs` | Jump to Storage Buckets list |
 
-- **Left — info block** (white text, gold labels):
-  ```
-  Organization:  n/a [RW]
-  User    :  <active gcloud auth account>
-  Selected:  <N> cluster(s)          — GKE clusters queued for kubeconfig generation
-  Project :  <current project in nav stack, or "—" at root>
-  g9s Rev :  v<version>
-  Status  :  <last operation / loading state>
-  ```
-- **Centre — key hints**, blue key / dim description pairs, horizontally
-  centered between the info block and the logo (not hugging either side).
-- **Right — ASCII logo**, gold, bold, right-aligned, positioned at the top of
-  the header (no top padding).
+---
 
-Below the header: a bordered, full-width table (or detail view) with an
-embedded title showing a breadcrumb (e.g. `proj-a / GKE Clusters[7]`,
-`selected:2`, active filter text when set). Below that, a bottom tab-pill
-strip showing the current resource tag (e.g. `<gke>`, `<projects>`).
+## 9. Panels
 
-Color palette: dark background (`#0b0c16`), gold accents (`#f5a623`), blue
-key hints (`#4da6ff`), k9s-style green/yellow/red status coloring.
+- **`<l>` Command Log** — blue-bordered panel showing every `gcloud`/`kubectl` command run and its result (exit code or truncated error). Includes pre-selection matching debug output when clusters are loaded.
+- **`<p>` Preselect** — green-bordered panel showing the contexts read from the existing kubeconfig file at startup, with their resolved cluster/project/location.
 
-## 8. Command log panel
+---
 
-`<l>` toggles a bordered log panel showing every underlying `gcloud`/`kubectl`
-command that's actually been run, and its result (success/exit code, or a
-truncated error snippet). Every subprocess call in `gcloud.py` is routed
-through this so nothing runs invisibly.
+## 10. Layout — K9s visual style
 
-## 9. Key bindings (current)
+No sidebar. Three-column header:
+
+| Section | Content |
+|---|---|
+| Left (50 cols) | Info block with gold labels, white bold values: Organization, User, Selected (cluster count), Project, Workspace, G9s Rev, Status |
+| Centre (`1fr`) | Key hints grid — K9s-style, up to 6 rows × N columns to fill available width. Blue keys, grey descriptions. |
+| Right (30 cols) | ASCII logo, gold, right-aligned |
+
+Below header: bordered table or detail view with breadcrumb title. Bottom: tab-pill strip.
+
+Color palette matches K9s default dark skin:
+- Background: terminal default (`$background`)
+- Borders: dodgerblue (`#1e90ff`), table border: `#4a90d9`
+- Filter prompt border: seagreen (`#2e8b57`)
+- Command prompt border: aqua (`#00cdcd`)
+- Table cursor: aqua bg / black fg
+- Logo / gold accents: `#f5a623`
+- Key hint keys: dodgerblue (`#1e90ff`), descriptions: grey (`#8b949e`)
+- Info block labels: orange (`#f5a623`), values: bold white
+
+---
+
+## 11. Key bindings
 
 | Key | Action |
 |---|---|
-| `↑`/`k`, `↓`/`j` | Move cursor |
-| `enter` | Drill into the current row |
-| `esc` | Back up one level (or close the command/filter bar if open) |
+| `↑` / `k`, `↓` / `j` | Move cursor |
+| `enter` | Drill into row (or rename context on Configured Clusters) |
+| `esc` | Back up one level / close command or filter bar |
 | `:` | Open command bar |
-| `/` | Open filter bar (live substring filter on current screen) |
-| `space` | Toggle current row (GKE Clusters screen only) |
-| `a` / `A` | Select all / deselect all visible rows (GKE Clusters screen only) |
-| `g` | Generate merged kubeconfig from all selected clusters |
+| `/` | Open filter bar |
+| `space` | Toggle cluster selection (GKE / Configured screens) |
+| `a` / `A` | Select all / deselect all visible rows |
+| `d` | Delete cluster from Configured Clusters screen |
+| `g` | Generate merged kubeconfig |
+| `w` | Re-open workspace selection modal |
 | `l` | Toggle command log panel |
-| `r` | Refresh current screen (bypasses cache, re-fetches) |
+| `p` | Toggle preselect panel |
+| `r` | Refresh current screen |
 | `?` | Help screen |
 | `q` | Quit |
 
-## 10. Non-goals (explicitly out of scope for now)
+---
 
-- Organizations / Folders levels of the resource hierarchy.
-- Any GCP-mutating operation beyond local credential files and
-  `~/.kube/config`.
-- Full k9s command-bar parity (fuzzy suggestions, command history,
-  `xray`/`alias`/etc. special verbs).
-- Editing/creating/deleting any browsed resource — every resource kind is
-  list + describe only.
+## 12. Non-goals (explicitly out of scope for now)
+
+- Organizations / Folders levels of the GCP resource hierarchy.
+- Any GCP-mutating operation (all `gcloud` calls are read-only against GCP).
+- Full K9s command-bar parity (fuzzy suggestions, command history, special verbs).
+- Editing, creating, or deleting any GCP resource — all resource kinds are list + describe only.
+- Supporting non-GKE kubeconfig clusters for generation (non-GKE contexts are shown and tracked but cannot have credentials re-fetched via gcloud).

@@ -15,7 +15,7 @@ dependencies = [
 g9s = "g9s.__main__:main"
 
 [project.urls]
-Repository = "https://github.com/TakealotGroup/g9s"
+Repository = "https://github.com/righardt/G9s.git"
 
 [tool.hatch.build.targets.wheel]
 packages = ["g9s"]
